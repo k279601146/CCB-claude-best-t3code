@@ -726,6 +726,8 @@ export type Options = {
   taskBudget?: { total: number; remaining?: number }
   /** Langfuse root trace span for observability. No-op if null/undefined. */
   langfuseTrace?: LangfuseSpan | null
+  baseURL?: string
+  apiKey?: string
 }
 
 export async function queryModelWithoutStreaming({
@@ -842,6 +844,8 @@ export async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
+    baseURL?: string
+    apiKey?: string
   },
   retryOptions: {
     model: string
@@ -869,6 +873,8 @@ export async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
+        baseURL: clientOptions.baseURL,
+        apiKey: clientOptions.apiKey,
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -1849,6 +1855,8 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
+          baseURL: options.baseURL,
+          apiKey: options.apiKey,
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt
@@ -2637,7 +2645,12 @@ async function* queryModel(
           : 'other') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource },
+        {
+          model: options.model,
+          source: options.querySource,
+          apiKey: options.apiKey,
+          baseURL: options.baseURL,
+        },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -2739,7 +2752,12 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource },
+          {
+            model: options.model,
+            source: options.querySource,
+            apiKey: options.apiKey,
+            baseURL: options.baseURL,
+          },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,

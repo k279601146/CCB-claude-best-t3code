@@ -87,12 +87,14 @@ export async function getAnthropicClient({
   model,
   fetchOverride,
   source,
+  baseURL,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  baseURL?: string
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -303,11 +305,13 @@ export async function getAnthropicClient({
     authToken: isClaudeAISubscriber()
       ? getClaudeAIOAuthTokens()?.accessToken
       : undefined,
-    // Set baseURL from OAuth config when using staging OAuth
+    // Set baseURL from OAuth config when using staging OAuth, or from options
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)
       ? { baseURL: getOauthConfig().BASE_API_URL }
-      : {}),
+      : baseURL
+        ? { baseURL }
+        : {}),
     ...ARGS,
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }

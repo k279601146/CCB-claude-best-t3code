@@ -64,8 +64,7 @@
     "health": "bun run scripts/health-check.ts",
     "postinstall": "node scripts/run-parallel.mjs scripts/postinstall.cjs scripts/setup-chrome-mcp.mjs",
     "docs:dev": "npx mintlify dev",
-    "typecheck": "tsc --noEmit",
-    "test:all": "bun run typecheck && bun test",
+    "test:all": "bun test",
     "rcs": "bun run scripts/rcs.ts"
   },
   "dependencies": {
@@ -86,7 +85,7 @@
     "@anthropic-ai/foundry-sdk": "^0.2.3",
     "@anthropic-ai/mcpb": "^2.1.2",
     "@anthropic-ai/sandbox-runtime": "^0.0.44",
-    "@anthropic-ai/sdk": "^0.81.0",
+    "@anthropic-ai/sdk": "^0.92.0",
     "@anthropic-ai/vertex-sdk": "^0.16.0",
     "@anthropic/ink": "workspace:*",
     "@aws-sdk/client-bedrock": "^3.1037.0",

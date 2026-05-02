@@ -241,6 +241,8 @@ export type QueryParams = {
   // from cumulative API usage. See configureTaskBudgetParams in claude.ts.
   taskBudget?: { total: number }
   deps?: QueryDeps
+  baseURL?: string
+  apiKey?: string
 }
 
 // -- query loop state
@@ -817,6 +819,8 @@ async function* queryLoop(
                 },
               }),
               langfuseTrace: toolUseContext.langfuseTrace,
+              baseURL: params.baseURL,
+              apiKey: params.apiKey,
             },
           })) {
             // We won't use the tool_calls from the first attempt

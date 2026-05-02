@@ -1,4 +1,4 @@
-import type { ContentBlock, ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
+import type { ContentBlock, ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index';
 type BetaContentBlock = ContentBlock | ToolResultBlockParam;
 import * as React from 'react';
 import { ConfigurableShortcutHint } from 'src/components/ConfigurableShortcutHint.js';
@@ -29,7 +29,7 @@ import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.j
 import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from './agentColorManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
-import { BetaUsage } from '@anthropic-ai/sdk/resources/beta.mjs';
+import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta';
 
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 

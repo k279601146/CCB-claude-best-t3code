@@ -159,6 +159,8 @@ export type QueryEngineConfig = {
   maxBudgetUsd?: number
   taskBudget?: { total: number }
   jsonSchema?: Record<string, unknown>
+  baseURL?: string
+  apiKey?: string
   verbose?: boolean
   replayUserMessages?: boolean
   /** Handler for URL elicitations triggered by MCP tool -32042 errors. */
@@ -700,6 +702,8 @@ export class QueryEngine {
       querySource: 'sdk',
       maxTurns,
       taskBudget,
+      baseURL: this.config.baseURL,
+      apiKey: this.config.apiKey,
     })) {
       // Record assistant, user, and compact boundary messages
       if (
