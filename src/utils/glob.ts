@@ -7,7 +7,7 @@ import {
 } from './permissions/filesystem.js'
 import { getPlatform } from './platform.js'
 import { getGlobExclusionsForPluginCache } from './plugins/orphanedPluginFilter.js'
-import { ripGrep } from './ripgrep.js'
+import { ripGrep, ripGrepStream } from './ripgrep.js'
 
 /**
  * Extracts the static base directory from a glob pattern.
@@ -63,6 +63,58 @@ export function extractGlobBaseDirectory(pattern: string): {
   return { baseDir, relativePattern }
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.message.includes('aborted'))
+  )
+}
+
+async function ripGrepFilesBounded(
+  args: string[],
+  target: string,
+  offset: number,
+  limit: number,
+  abortSignal: AbortSignal,
+): Promise<{ paths: string[]; truncated: boolean }> {
+  const needed = offset + limit + 1
+  const paths: string[] = []
+  const controller = new AbortController()
+  let stoppedAfterLimit = false
+
+  const abort = () => controller.abort(abortSignal.reason)
+  if (abortSignal.aborted) {
+    abort()
+  } else {
+    abortSignal.addEventListener('abort', abort, { once: true })
+  }
+
+  try {
+    await ripGrepStream(args, target, controller.signal, lines => {
+      for (const line of lines) {
+        if (!line) continue
+        paths.push(line)
+        if (paths.length >= needed) {
+          stoppedAfterLimit = true
+          controller.abort()
+          break
+        }
+      }
+    })
+  } catch (error) {
+    if (!stoppedAfterLimit || !isAbortError(error)) {
+      throw error
+    }
+  } finally {
+    abortSignal.removeEventListener('abort', abort)
+  }
+
+  return {
+    paths: paths.slice(offset, offset + limit),
+    truncated: stoppedAfterLimit || paths.length > offset + limit,
+  }
+}
+
 export async function glob(
   filePattern: string,
   cwd: string,
@@ -97,11 +149,14 @@ export async function glob(
   // Note: use || instead of ?? to treat empty string as unset (defaulting to true)
   const noIgnore = isEnvTruthy(process.env.CLAUDE_CODE_GLOB_NO_IGNORE || 'true')
   const hidden = isEnvTruthy(process.env.CLAUDE_CODE_GLOB_HIDDEN || 'true')
+  const streaming = isEnvTruthy(
+    process.env.CLAUDE_CODE_GLOB_STREAMING || 'true',
+  )
   const args = [
     '--files',
     '--glob',
     searchPattern,
-    '--sort=modified',
+    ...(streaming ? [] : ['--sort=modified']),
     ...(noIgnore ? ['--no-ignore'] : []),
     ...(hidden ? ['--hidden'] : []),
   ]
@@ -116,15 +171,22 @@ export async function glob(
     args.push('--glob', exclusion)
   }
 
-  const allPaths = await ripGrep(args, searchDir, abortSignal)
+  const { paths, truncated } = streaming
+    ? await ripGrepFilesBounded(args, searchDir, offset, limit, abortSignal)
+    : {
+        paths: await ripGrep(args, searchDir, abortSignal),
+        truncated: false,
+      }
 
   // ripgrep returns relative paths, convert to absolute
-  const absolutePaths = allPaths.map(p =>
-    isAbsolute(p) ? p : join(searchDir, p),
-  )
+  const absolutePaths = paths.map(p => (isAbsolute(p) ? p : join(searchDir, p)))
 
-  const truncated = absolutePaths.length > offset + limit
-  const files = absolutePaths.slice(offset, offset + limit)
+  const files = streaming
+    ? absolutePaths
+    : absolutePaths.slice(offset, offset + limit)
 
-  return { files, truncated }
+  return {
+    files,
+    truncated: streaming ? truncated : absolutePaths.length > offset + limit,
+  }
 }

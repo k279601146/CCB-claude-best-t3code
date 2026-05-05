@@ -14,6 +14,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { clearDumpState } from 'src/services/api/dumpPrompts.js'
 import type { AppState } from 'src/state/AppState.js'
+import type { MCPServerConnection } from 'src/services/mcp/types.js'
 import type {
   Tool,
   ToolPermissionContext,
@@ -286,6 +287,15 @@ export function finalizeAgentTool(
     isAsync: boolean
   },
 ): AgentToolResult {
+  const incomplete = detectIncompleteAgentFinalResponse(
+    agentMessages,
+    agentId,
+    metadata.agentType,
+  )
+  if (incomplete) {
+    throw new Error(incomplete.message)
+  }
+
   const {
     prompt,
     resolvedAgentModel,
@@ -373,6 +383,234 @@ export function getLastToolUseName(message: MessageType): string | undefined {
     b => b.type === 'tool_use',
   )
   return block?.type === 'tool_use' ? block.name : undefined
+}
+
+export type RequiredMcpServerAvailability = {
+  serversWithTools: string[]
+  missing: string[]
+  failed: string[]
+  pending: string[]
+  needsAuth: string[]
+}
+
+function serverMatchesRequiredPattern(
+  serverName: string,
+  pattern: string,
+): boolean {
+  return serverName.toLowerCase().includes(pattern.toLowerCase())
+}
+
+function requiredMcpServerMatches(
+  requiredPatterns: readonly string[],
+  serverName: string,
+): boolean {
+  return requiredPatterns.some(pattern =>
+    serverMatchesRequiredPattern(serverName, pattern),
+  )
+}
+
+export function getServersWithMcpTools(
+  tools: readonly { name?: string }[],
+): string[] {
+  const serversWithTools: string[] = []
+  for (const tool of tools) {
+    if (tool.name?.startsWith('mcp__')) {
+      const parts = tool.name.split('__')
+      const serverName = parts[1]
+      if (serverName && !serversWithTools.includes(serverName)) {
+        serversWithTools.push(serverName)
+      }
+    }
+  }
+  return serversWithTools
+}
+
+export function getRequiredMcpServerAvailability(input: {
+  requiredMcpServers: readonly string[]
+  clients: readonly MCPServerConnection[]
+  tools: readonly { name?: string }[]
+}): RequiredMcpServerAvailability {
+  const serversWithTools = getServersWithMcpTools(input.tools)
+  const failed = input.clients
+    .filter(
+      client =>
+        client.type === 'failed' &&
+        requiredMcpServerMatches(input.requiredMcpServers, client.name),
+    )
+    .map(client => `${client.name}${client.error ? ` (${client.error})` : ''}`)
+  const pending = input.clients
+    .filter(
+      client =>
+        client.type === 'pending' &&
+        requiredMcpServerMatches(input.requiredMcpServers, client.name),
+    )
+    .map(client => client.name)
+  const needsAuth = input.clients
+    .filter(
+      client =>
+        client.type === 'needs-auth' &&
+        requiredMcpServerMatches(input.requiredMcpServers, client.name),
+    )
+    .map(client => client.name)
+  const missing = input.requiredMcpServers.filter(
+    pattern =>
+      !serversWithTools.some(server =>
+        serverMatchesRequiredPattern(server, pattern),
+      ),
+  )
+
+  return {
+    serversWithTools,
+    missing,
+    failed,
+    pending,
+    needsAuth,
+  }
+}
+
+export function formatRequiredMcpServerError(input: {
+  agentType: string
+  availability: RequiredMcpServerAvailability
+}): string {
+  const parts = [
+    `Agent '${input.agentType}' requires MCP servers matching: ${input.availability.missing.join(', ')}.`,
+    `MCP servers with tools: ${
+      input.availability.serversWithTools.length > 0
+        ? input.availability.serversWithTools.join(', ')
+        : 'none'
+    }.`,
+  ]
+  if (input.availability.failed.length > 0) {
+    parts.push(
+      `Failed required MCP servers: ${input.availability.failed.join(', ')}.`,
+    )
+  }
+  if (input.availability.needsAuth.length > 0) {
+    parts.push(
+      `Required MCP servers needing auth: ${input.availability.needsAuth.join(', ')}.`,
+    )
+  }
+  if (input.availability.pending.length > 0) {
+    parts.push(
+      `Required MCP servers still pending: ${input.availability.pending.join(', ')}.`,
+    )
+  }
+  parts.push('Use /mcp to configure and authenticate the required MCP servers.')
+  return parts.join(' ')
+}
+
+export type IncompleteAgentFinalResponse = {
+  agentId: string
+  agentType: string
+  lastToolName?: string
+  message: string
+}
+
+function getContentBlocks(
+  message: MessageType,
+): readonly Record<string, unknown>[] {
+  const content = message.message?.content
+  return Array.isArray(content) ? (content as Record<string, unknown>[]) : []
+}
+
+function findLastToolUseBlock(
+  blocks: readonly Record<string, unknown>[],
+): Record<string, unknown> | undefined {
+  return blocks.findLast(block => block.type === 'tool_use')
+}
+
+function findLastToolResultBlock(
+  blocks: readonly Record<string, unknown>[],
+): Record<string, unknown> | undefined {
+  return blocks.findLast(block => block.type === 'tool_result')
+}
+
+function findToolNameForToolUseId(
+  messages: MessageType[],
+  toolUseId: unknown,
+): string | undefined {
+  if (typeof toolUseId !== 'string' || toolUseId.length === 0) {
+    return undefined
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (message.type !== 'assistant') continue
+    const blocks = getContentBlocks(message)
+    for (let j = blocks.length - 1; j >= 0; j--) {
+      const block = blocks[j]!
+      if (block.type === 'tool_use' && block.id === toolUseId) {
+        return typeof block.name === 'string' ? block.name : undefined
+      }
+    }
+  }
+  return undefined
+}
+
+function findLastToolName(messages: MessageType[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const toolName = getLastToolUseName(messages[i]!)
+    if (toolName) return toolName
+  }
+  return undefined
+}
+
+function createIncompleteAgentFinalResponse(
+  agentId: string,
+  agentType: string,
+  lastToolName?: string,
+): IncompleteAgentFinalResponse {
+  const toolSuffix = lastToolName ? ` lastTool=${lastToolName}` : ''
+  return {
+    agentId,
+    agentType,
+    lastToolName,
+    message: `subagent ended without final response; agentType=${agentType} agentId=${agentId}${toolSuffix}`,
+  }
+}
+
+export function detectIncompleteAgentFinalResponse(
+  messages: MessageType[],
+  agentId: string,
+  agentType: string,
+): IncompleteAgentFinalResponse | null {
+  const lastRecordableMessage = messages.findLast(
+    message => message.type !== 'system' && message.type !== 'progress',
+  )
+  if (!lastRecordableMessage) return null
+
+  if (lastRecordableMessage.type === 'user') {
+    const lastToolResult = findLastToolResultBlock(
+      getContentBlocks(lastRecordableMessage),
+    )
+    if (!lastToolResult) return null
+
+    const lastToolName =
+      findToolNameForToolUseId(messages, lastToolResult.tool_use_id) ??
+      findLastToolName(messages)
+    return createIncompleteAgentFinalResponse(agentId, agentType, lastToolName)
+  }
+
+  if (lastRecordableMessage.type === 'assistant') {
+    const blocks = getContentBlocks(lastRecordableMessage)
+    const lastToolUse = findLastToolUseBlock(blocks)
+    if (!lastToolUse) return null
+
+    const stopReason = (
+      lastRecordableMessage.message as { stop_reason?: unknown }
+    )?.stop_reason
+    if (stopReason !== 'tool_use' && blocks.at(-1)?.type !== 'tool_use') {
+      return null
+    }
+
+    return createIncompleteAgentFinalResponse(
+      agentId,
+      agentType,
+      typeof lastToolUse.name === 'string' ? lastToolUse.name : undefined,
+    )
+  }
+
+  return null
 }
 
 export function emitTaskProgress(
@@ -605,6 +843,15 @@ export async function runAsyncAgentLifecycle({
     }
 
     stopSummarization?.()
+
+    const incomplete = detectIncompleteAgentFinalResponse(
+      agentMessages,
+      taskId,
+      metadata.agentType,
+    )
+    if (incomplete) {
+      throw new Error(incomplete.message)
+    }
 
     const agentResult = finalizeAgentTool(agentMessages, taskId, metadata)
 

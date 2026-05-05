@@ -35,7 +35,10 @@ import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
-import type { MCPServerConnection } from './services/mcp/types.js'
+import type {
+  MCPServerConnection,
+  ServerResource,
+} from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
@@ -87,6 +90,10 @@ import {
   shouldEnableThinkingByDefault,
   type ThinkingConfig,
 } from './utils/thinking.js'
+import {
+  mergeDpcodeSelectedSkillAllowedTools,
+  processDpcodeSelectedSkill,
+} from './dpcode/selectedSkills.js'
 
 // Lazy: MessageSelector.tsx pulls React/ink; only needed for message filtering at query time
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -142,8 +149,10 @@ const snipProjection = feature('HISTORY_SNIP')
 export type QueryEngineConfig = {
   cwd: string
   tools: Tools
+  refreshTools?: () => Tools
   commands: Command[]
   mcpClients: MCPServerConnection[]
+  mcpResources?: Record<string, ServerResource[]>
   agents: AgentDefinition[]
   canUseTool: CanUseToolFn
   getAppState: () => AppState
@@ -220,12 +229,15 @@ export class QueryEngine {
 
   async *submitMessage(
     prompt: string | ContentBlockParam[],
-    options?: { uuid?: string; isMeta?: boolean },
+    options?: {
+      uuid?: string
+      isMeta?: boolean
+      selectedSkills?: ReadonlyArray<{ name: string; path?: string }>
+    },
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const {
       cwd,
       commands,
-      tools,
       mcpClients,
       verbose = false,
       thinkingConfig,
@@ -246,6 +258,8 @@ export class QueryEngine {
       setSDKStatus,
       orphanedPermission,
     } = this.config
+    const tools = this.config.refreshTools?.() ?? this.config.tools
+    const mcpResources = this.config.mcpResources ?? {}
 
     this.discoveredSkillNames.clear()
     this.permissionDenials = []
@@ -368,7 +382,7 @@ export class QueryEngine {
         mainLoopModel: initialMainLoopModel,
         thinkingConfig: initialThinkingConfig,
         mcpClients,
-        mcpResources: {},
+        mcpResources,
         ideInstallationStatus: null,
         isNonInteractiveSession: true,
         customSystemPrompt,
@@ -421,6 +435,25 @@ export class QueryEngine {
       }
     }
 
+    const selectedSkillMessages: Message[] = []
+    const selectedSkillAllowedTools: string[] = []
+    let selectedSkillModel: string | undefined
+    for (const selectedSkill of options?.selectedSkills ?? []) {
+      const selectedSkillResult = await processDpcodeSelectedSkill({
+        selectedSkill,
+        commands,
+        context: {
+          ...processUserInputContext,
+          messages: [...this.mutableMessages, ...selectedSkillMessages],
+        },
+      })
+      selectedSkillMessages.push(...(selectedSkillResult.messages as Message[]))
+      selectedSkillAllowedTools.push(
+        ...(selectedSkillResult.allowedTools ?? []),
+      )
+      selectedSkillModel = selectedSkillResult.model ?? selectedSkillModel
+    }
+
     const {
       messages: messagesFromUserInput,
       shouldQuery,
@@ -442,7 +475,11 @@ export class QueryEngine {
     })
 
     // Push new messages, including user input and any attachments
-    this.mutableMessages.push(...messagesFromUserInput)
+    const messagesFromTurnInput = [
+      ...selectedSkillMessages,
+      ...messagesFromUserInput,
+    ]
+    this.mutableMessages.push(...messagesFromTurnInput)
 
     // Update params to reflect updates from processing /slash commands
     const messages = [...this.mutableMessages]
@@ -461,7 +498,7 @@ export class QueryEngine {
     // kill-mid-request. The await is ~4ms on SSD, ~30ms under disk contention
     // — the single largest controllable critical-path cost after module eval.
     // Transcript is still written (for post-hoc debugging); just not blocking.
-    if (persistSession && messagesFromUserInput.length > 0) {
+    if (persistSession && messagesFromTurnInput.length > 0) {
       const transcriptPromise = recordTranscript(messages)
       if (isBareMode()) {
         void transcriptPromise
@@ -478,7 +515,7 @@ export class QueryEngine {
 
     // Filter messages that should be acknowledged after transcript
     const _selector = messageSelector()
-    const replayableMessages = messagesFromUserInput.filter(
+    const replayableMessages = messagesFromTurnInput.filter(
       msg =>
         (msg.type === 'user' &&
           !msg.isMeta && // Skip synthetic caveat messages
@@ -495,12 +532,16 @@ export class QueryEngine {
         ...prev.toolPermissionContext,
         alwaysAllowRules: {
           ...prev.toolPermissionContext.alwaysAllowRules,
-          command: allowedTools,
+          command: mergeDpcodeSelectedSkillAllowedTools(
+            selectedSkillAllowedTools,
+            allowedTools,
+          ),
         },
       },
     }))
 
-    const mainLoopModel = modelFromUserInput ?? initialMainLoopModel
+    const mainLoopModel =
+      modelFromUserInput ?? selectedSkillModel ?? initialMainLoopModel
 
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
@@ -517,7 +558,7 @@ export class QueryEngine {
         mainLoopModel,
         thinkingConfig: initialThinkingConfig,
         mcpClients,
-        mcpResources: {},
+        mcpResources,
         ideInstallationStatus: null,
         isNonInteractiveSession: true,
         customSystemPrompt,
@@ -658,7 +699,7 @@ export class QueryEngine {
       const _sel = messageSelector()
       const _filter =
         _sel?.selectableUserMessagesFilter ?? ((_msg: unknown) => true)
-      messagesFromUserInput.filter(_filter).forEach(message => {
+      messagesFromTurnInput.filter(_filter).forEach(message => {
         void fileHistoryMakeSnapshot(
           (updater: (prev: FileHistoryState) => FileHistoryState) => {
             setAppState(prev => ({

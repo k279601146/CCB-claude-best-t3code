@@ -22,8 +22,8 @@ const __filename = fileURLToPath(import.meta.url)
 // Both built modes: the dist root is at <root>/dist/ where dist/vendor/ripgrep/ lives.
 const __dirname = (() => {
   const dir = path.dirname(__filename)
-  // Test mode: from src/utils/ → project root
-  if (process.env.NODE_ENV === 'test') return path.resolve(dir, '../../../')
+  // Test mode uses the same source-tree vendor layout as dev mode.
+  if (process.env.NODE_ENV === 'test') return dir
   // Check if we're inside a dist directory at any depth
   // (dist/ or dist/chunks/) — vendor lives at <dist-root>/vendor/ripgrep/
   const parts = dir.split(path.sep)

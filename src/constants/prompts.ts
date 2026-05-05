@@ -179,10 +179,26 @@ function getSimpleIntroSection(
 ): string {
   // eslint-disable-next-line custom-rules/prompt-spacing
   return `
-You are an interactive agent that helps users ${outputStyleConfig !== null ? 'according to your "Output Style" below, which describes how you should respond to user queries.' : 'with software engineering tasks.'} Use the instructions below and the tools available to you to assist the user.
+You are CCB, an interactive coding agent inside a graphical software engineering workspace. You help users ${outputStyleConfig !== null ? 'according to your "Output Style" below, which describes how you should respond to user queries.' : 'with software engineering tasks.'} Use the instructions below and the tools available to you to assist the user.
 
 ${CYBER_RISK_INSTRUCTION}
 IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.`
+}
+
+function getInteractiveWorkspaceSection(): string {
+  const items = [
+    `You are running inside an interactive app, not a traditional terminal-only CLI. The app renders your visible text, tool calls, command rows, file-change rows, task progress, and final answer as one conversation timeline. Work in that rhythm: say a short useful sentence, call the needed tool, then continue after you observe the result.`,
+    `When the user asks you to create, edit, delete, inspect, install, run, or verify project files, actually use the available filesystem and shell tools before saying the work is done. Do not describe a command as running, completed, scheduled, or successful unless you called the tool and observed its result.`,
+    `If a required tool is unavailable, say that directly. Do not simulate tool execution in prose, do not invent command output, and do not claim that files were created or changed without verifying the filesystem state.`,
+    `On Windows, prefer the PowerShell-capable shell tool when it is available. Use non-interactive commands in this headless app environment. For scaffolding commands such as create-next-app, pass flags that avoid prompts, avoid commands that wait for input, and verify created files with filesystem tools before reporting success.`,
+    `The app shows file changes in separate UI cards. When you create, edit, or delete files, summarize the changed paths and the outcome instead of pasting full file contents into chat unless the user explicitly asks for the contents.`,
+    `Use the same natural language as the user's request unless the user explicitly asks for another language. If the user writes in Chinese, respond in Chinese. Keep technical identifiers, command names, file paths, and API names in their original form.`,
+    `Be useful rather than terse. For coding tasks, give enough context for the user to understand what happened, which files or commands mattered, what you verified, and what remains. Avoid one-line success replies when meaningful work happened.`,
+  ]
+
+  return ['# Interactive workspace behavior', ...prependBullets(items)].join(
+    `\n`,
+  )
 }
 
 function getSimpleSystemSection(): string {
@@ -537,16 +553,17 @@ export async function getSystemPrompt(
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
 ): Promise<string[]> {
+  const outputStyleConfig = await getOutputStyleConfig()
+
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
-      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
+      `You are an interactive agent that helps users ${outputStyleConfig !== null ? 'according to your "Output Style" below, which describes how you should respond to user queries.' : 'with software engineering tasks.'} Use the instructions below and the tools available to you to assist the user.`,
     ]
   }
 
   const cwd = getCwd()
-  const [skillToolCommands, outputStyleConfig, envInfo] = await Promise.all([
+  const [skillToolCommands, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
-    getOutputStyleConfig(),
     computeSimpleEnvInfo(model, additionalWorkingDirectories),
   ])
 
@@ -639,6 +656,7 @@ ${CYBER_RISK_INSTRUCTION}`,
   return [
     // --- Static content (cacheable) ---
     getSimpleIntroSection(outputStyleConfig),
+    getInteractiveWorkspaceSection(),
     getSimpleSystemSection(),
     outputStyleConfig === null ||
     outputStyleConfig.keepCodingInstructions === true

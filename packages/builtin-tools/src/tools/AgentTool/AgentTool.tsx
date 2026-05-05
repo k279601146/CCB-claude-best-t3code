@@ -72,9 +72,12 @@ import { setAgentColor } from './agentColorManager.js';
 import {
   agentToolResultSchema,
   classifyHandoffIfNeeded,
+  detectIncompleteAgentFinalResponse,
   emitTaskProgress,
   extractPartialResult,
+  formatRequiredMcpServerError,
   finalizeAgentTool,
+  getRequiredMcpServerAvailability,
   getLastToolUseName,
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js';
@@ -514,27 +517,18 @@ export const AgentTool = buildTool({
         }
       }
 
-      // Get servers that actually have tools (meaning they're connected AND authenticated)
-      const serversWithTools: string[] = [];
-      for (const tool of currentAppState.mcp.tools) {
-        if (tool.name?.startsWith('mcp__')) {
-          // Extract server name from tool name (format: mcp__serverName__toolName)
-          const parts = tool.name.split('__');
-          const serverName = parts[1];
-          if (serverName && !serversWithTools.includes(serverName)) {
-            serversWithTools.push(serverName);
-          }
-        }
-      }
+      const availability = getRequiredMcpServerAvailability({
+        requiredMcpServers,
+        clients: currentAppState.mcp.clients,
+        tools: currentAppState.mcp.tools,
+      });
 
-      if (!hasRequiredMcpServers(selectedAgent, serversWithTools)) {
-        const missing = requiredMcpServers.filter(
-          pattern => !serversWithTools.some(server => server.toLowerCase().includes(pattern.toLowerCase())),
-        );
+      if (!hasRequiredMcpServers(selectedAgent, availability.serversWithTools)) {
         throw new Error(
-          `Agent '${selectedAgent.agentType}' requires MCP servers matching: ${missing.join(', ')}. ` +
-            `MCP servers with tools: ${serversWithTools.length > 0 ? serversWithTools.join(', ') : 'none'}. ` +
-            `Use /mcp to configure and authenticate the required MCP servers.`,
+          formatRequiredMcpServerError({
+            agentType: selectedAgent.agentType,
+            availability,
+          }),
         );
       }
     }
@@ -1315,6 +1309,11 @@ export const AgentTool = buildTool({
                 }
               }
             }
+
+            const incomplete = detectIncompleteAgentFinalResponse(agentMessages, syncAgentId, metadata.agentType);
+            if (incomplete) {
+              throw new Error(incomplete.message);
+            }
           } catch (error) {
             // Handle errors from the sync agent loop
             // AbortError should be re-thrown for proper interruption handling
@@ -1412,6 +1411,11 @@ export const AgentTool = buildTool({
           // whatever messages we have. If we have no assistant messages,
           // re-throw the error so it's properly handled by the tool framework.
           if (syncAgentError) {
+            const incomplete = detectIncompleteAgentFinalResponse(agentMessages, syncAgentId, metadata.agentType);
+            if (incomplete) {
+              throw syncAgentError;
+            }
+
             // Check if we have any assistant messages to return
             const hasAssistantMessages = agentMessages.some(msg => msg.type === 'assistant');
 

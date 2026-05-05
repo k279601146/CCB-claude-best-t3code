@@ -153,7 +153,13 @@ mock.module('src/tools/AgentTool/AgentTool.tsx', () => ({
   default: {},
 }))
 
-const { countToolUses, getLastToolUseName } = await import('../agentToolUtils')
+const {
+  countToolUses,
+  detectIncompleteAgentFinalResponse,
+  formatRequiredMcpServerError,
+  getRequiredMcpServerAvailability,
+  getLastToolUseName,
+} = await import('../agentToolUtils')
 
 function makeAssistantMessage(content: any[]): any {
   return { type: 'assistant', message: { content } }
@@ -161,6 +167,15 @@ function makeAssistantMessage(content: any[]): any {
 
 function makeUserMessage(text: string): any {
   return { type: 'user', message: { content: text } }
+}
+
+function makeToolResultMessage(toolUseId: string, content = 'ok'): any {
+  return {
+    type: 'user',
+    message: {
+      content: [{ type: 'tool_result', tool_use_id: toolUseId, content }],
+    },
+  }
 }
 
 describe('countToolUses', () => {
@@ -235,5 +250,109 @@ describe('getLastToolUseName', () => {
   test('handles message with null content', () => {
     const msg = { type: 'assistant', message: { content: null } } as any
     expect(getLastToolUseName(msg)).toBeUndefined()
+  })
+})
+
+describe('detectIncompleteAgentFinalResponse', () => {
+  test('detects a sidechain that ends after a tool_result', () => {
+    const messages = [
+      makeAssistantMessage([{ type: 'tool_use', id: 'tool-1', name: 'Glob' }]),
+      makeToolResultMessage('tool-1', 'many files'),
+    ]
+
+    const result = detectIncompleteAgentFinalResponse(
+      messages,
+      'agent-1',
+      'Explore',
+    )
+
+    expect(result).not.toBeNull()
+    expect(result?.message).toContain('subagent ended without final response')
+    expect(result?.message).toContain('agentType=Explore')
+    expect(result?.message).toContain('agentId=agent-1')
+    expect(result?.message).toContain('lastTool=Glob')
+  })
+
+  test('allows a normal sidechain with final assistant text', () => {
+    const messages = [
+      makeAssistantMessage([{ type: 'tool_use', id: 'tool-1', name: 'Read' }]),
+      makeToolResultMessage('tool-1', 'file contents'),
+      makeAssistantMessage([{ type: 'text', text: 'Final analysis.' }]),
+    ]
+
+    expect(
+      detectIncompleteAgentFinalResponse(messages, 'agent-1', 'Explore'),
+    ).toBeNull()
+  })
+
+  test('detects Explore regression ending after failed Bash and truncated Glob', () => {
+    const messages = [
+      makeAssistantMessage([
+        { type: 'text', text: 'I will inspect the project.' },
+        { type: 'tool_use', id: 'tool-bash', name: 'Bash' },
+      ]),
+      makeToolResultMessage('tool-bash', 'Bash is not available on Windows'),
+      makeAssistantMessage([
+        { type: 'text', text: 'Falling back to Glob.' },
+        { type: 'tool_use', id: 'tool-glob', name: 'Glob' },
+      ]),
+      makeToolResultMessage('tool-glob', 'Output truncated'),
+    ]
+
+    const result = detectIncompleteAgentFinalResponse(
+      messages,
+      'agent-explore',
+      'Explore',
+    )
+
+    expect(result?.lastToolName).toBe('Glob')
+    expect(result?.message).toContain('subagent ended without final response')
+  })
+
+  test('detects final assistant message that is still in tool_use state', () => {
+    const messages = [
+      makeAssistantMessage([
+        { type: 'text', text: 'Checking one more thing.' },
+        { type: 'tool_use', id: 'tool-1', name: 'Read' },
+      ]),
+    ]
+
+    const result = detectIncompleteAgentFinalResponse(
+      messages,
+      'agent-1',
+      'Explore',
+    )
+
+    expect(result?.lastToolName).toBe('Read')
+  })
+})
+
+describe('required MCP server availability', () => {
+  test('reports failed, pending, and auth states for required MCP servers', () => {
+    const availability = getRequiredMcpServerAvailability({
+      requiredMcpServers: ['filesystem', 'github', 'linear'],
+      clients: [
+        { name: 'github-enterprise', type: 'failed', error: 'bad token' },
+        { name: 'linear-main', type: 'needs-auth' },
+        { name: 'filesystem-local', type: 'pending' },
+      ] as any,
+      tools: [{ name: 'mcp__filesystem-local__read_file' }],
+    })
+
+    expect(availability.serversWithTools).toEqual(['filesystem-local'])
+    expect(availability.missing).toEqual(['github', 'linear'])
+    expect(availability.failed).toEqual(['github-enterprise (bad token)'])
+    expect(availability.needsAuth).toEqual(['linear-main'])
+    expect(availability.pending).toEqual(['filesystem-local'])
+
+    const message = formatRequiredMcpServerError({
+      agentType: 'Explore',
+      availability,
+    })
+    expect(message).toContain("Agent 'Explore' requires MCP servers")
+    expect(message).toContain(
+      'Failed required MCP servers: github-enterprise (bad token)',
+    )
+    expect(message).toContain('Required MCP servers needing auth: linear-main')
   })
 })
