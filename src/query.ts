@@ -8,7 +8,6 @@ import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
   estimateMaxTurnGrowth,
-  getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
   type AutoCompactTrackingState,
@@ -69,7 +68,7 @@ import {
 const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
   : null
-const jobClassifier = feature('TEMPLATES')
+const _jobClassifier = feature('TEMPLATES')
   ? (require('./jobs/classifier.js') as typeof import('./jobs/classifier.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -124,6 +123,7 @@ import { count } from './utils/array.js'
 import {
   createTrace,
   endTrace,
+  flushLangfuse,
   isLangfuseEnabled,
 } from './services/langfuse/index.js'
 import { getAPIProvider } from './utils/model/providers.js'
@@ -339,6 +339,35 @@ export async function* query(
         terminal?.reason === 'aborted_streaming' ||
         terminal?.reason === 'aborted_tools'
       endTrace(langfuseTrace, undefined, isAborted ? 'interrupted' : undefined)
+      // Flush the processor to release span data (including serialized
+      // conversation history stored as langfuse.observation.input). Without
+      // this, SpanImpl objects retain hundreds of KB of JSON until the
+      // processor's batch timer fires (default 10s).
+      await flushLangfuse()
+    }
+
+    // Break the closure chain: toolUseContext captures langfuseTrace which
+    // holds SpanImpl → otperformance (the 571MB Performance object). Nulling
+    // these after endTrace allows GC to reclaim the span tree.
+    if (paramsWithTrace !== params) {
+      paramsWithTrace.toolUseContext.langfuseTrace = null
+      paramsWithTrace.toolUseContext.langfuseRootTrace = null
+      paramsWithTrace.toolUseContext.langfuseBatchSpan = null
+    }
+
+    // Clear JSC's native Performance buffers. OTel (otperformance) references
+    // globalThis.performance which stores marks/measures/resource timings in a
+    // C++ Vector that never shrinks. Long-running sessions accumulate hundreds
+    // of MB of dead capacity even after spans are flushed and nullified.
+    const gPerf = globalThis.performance
+    if (gPerf && typeof gPerf.clearMarks === 'function') {
+      try {
+        gPerf.clearMarks()
+        gPerf.clearMeasures?.()
+        gPerf.clearResourceTimings?.()
+      } catch {
+        // Non-critical — some environments may not support all methods
+      }
     }
   }
 
@@ -478,6 +507,22 @@ async function* queryLoop(
     }
 
     let messagesForQuery = getMessagesAfterCompactBoundary(messages)
+
+    // Release toolUseResult payloads from previous turns. By this point the
+    // UI has already rendered those results and the next API call only needs
+    // message.message.content (tool_result blocks), not the raw output object.
+    // This prevents unbounded memory growth in long sessions before compact
+    // triggers — a single FileRead of a 400KB file would otherwise stay in
+    // mutableMessages forever.
+    for (const msg of messagesForQuery) {
+      if (
+        msg.type === 'user' &&
+        'toolUseResult' in msg &&
+        msg.toolUseResult !== undefined
+      ) {
+        delete (msg as Message & { toolUseResult?: unknown }).toolUseResult
+      }
+    }
 
     let tracking = autoCompactTracking
 

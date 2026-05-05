@@ -70,6 +70,11 @@ export default defineConfig({
   ssr: {
     target: 'node',
     noExternal: true,
+    // Packages with runtime require.resolve() or WASM binaries can't be
+    // inlined into the bundle — they must be resolved from node_modules
+    // at runtime.  doubaoime-asr uses opus-encdec which does
+    // require.resolve('opus-encdec/dist/libopus-encoder.wasm.js').
+    external: ['doubaoime-asr', 'opus-encdec'],
   },
 
   build: {
@@ -78,7 +83,7 @@ export default defineConfig({
     target: 'es2020',
     copyPublicDir: false,
     sourcemap: false,
-    minify: false,
+    minify: true,
 
     // SSR build mode — uses Rollup with Node.js target
     ssr: true,
@@ -88,9 +93,9 @@ export default defineConfig({
 
       output: {
         format: 'es',
-        dir: 'dist',
+        // Single-file build: no code splitting, all dynamic imports inlined
+        codeSplitting: false,
         entryFileNames: 'cli.js',
-        chunkFileNames: 'chunks/[name]-[hash].js',
       },
 
       plugins: [
@@ -111,6 +116,9 @@ export default defineConfig({
   // Compile-time constant replacement (MACRO.* defines)
   define: {
     ...getMacroDefines(),
+    // React production mode — eliminates _debugStack Error objects
+    // (6,889 objects × ~1.7KB = 12MB in development builds)
+    'process.env.NODE_ENV': JSON.stringify('production'),
   },
 
   resolve: {

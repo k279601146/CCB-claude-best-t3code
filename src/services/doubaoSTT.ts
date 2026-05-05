@@ -18,9 +18,6 @@ import { logError } from '../utils/log.js'
 // Re-export FinalizeSource so useVoice can import from either module
 export type { FinalizeSource } from './voiceStreamSTT.js'
 
-// Maximum time to wait for the generator to finish after end-of-stream signal.
-const FINALIZE_SAFETY_TIMEOUT_MS = 5_000
-
 // ─── AsyncIterable audio queue ─────────────────────────────────────────
 
 // A push-based queue that implements AsyncIterable<Uint8Array>.
@@ -110,12 +107,15 @@ export async function connectDoubaoStream(
   let doubaoAsr: typeof import('doubaoime-asr')
   try {
     doubaoAsr = await import('doubaoime-asr')
-  } catch {
-    logError(new Error('[doubao-asr] Failed to import doubaoime-asr package'))
-    callbacks.onError(
-      'doubaoime-asr package is not installed. Install it with: bun add doubaoime-asr',
-      { fatal: true },
+  } catch (err) {
+    logError(
+      new Error(
+        `[doubao-asr] Failed to import doubaoime-asr package: ${String(err)}`,
+      ),
     )
+    callbacks.onError(`doubaoime-asr package import failed: ${String(err)}`, {
+      fatal: true,
+    })
     return null
   }
 
